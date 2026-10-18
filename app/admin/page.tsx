@@ -1,15 +1,75 @@
 'use client';
-import {useCallback,useEffect,useState} from 'react';
+import {useCallback,useEffect,useRef,useState} from 'react';
 import {createClient,SupabaseClient} from '@supabase/supabase-js';
+const IDLE_TIMEOUT_MS=15*60*1000;
+const ACTIVITY_STORAGE_KEY='svc_admin_last_activity';
 type Appt={id:string;full_name:string;phone:string;preferred_date:string;preferred_time:string;category:string;message:string;status:'new'|'contacted'|'closed';created_at:string};
 export default function Admin(){
  const [client,setClient]=useState<SupabaseClient|null>(null),[email,setEmail]=useState(''),[password,setPassword]=useState(''),[token,setToken]=useState(''),[rows,setRows]=useState<Appt[]>([]),[hours,setHours]=useState('Call to confirm consultation timings'),[published,setPublished]=useState(false),[message,setMessage]=useState(''),[loading,setLoading]=useState(false),[configured,setConfigured]=useState(true);
  useEffect(()=>{const url=process.env.NEXT_PUBLIC_SUPABASE_URL,key=process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;if(!url||!key){setConfigured(false);return;}const c=createClient(url,key);setClient(c);c.auth.getSession().then(({data})=>setToken(data.session?.access_token||''));const {data:subscription}=c.auth.onAuthStateChange((_event,session)=>setToken(session?.access_token||''));return ()=>subscription.subscription.unsubscribe()},[]);
+ const [idleSecondsLeft,setIdleSecondsLeft]=useState(900);
+ const signingOut=useRef(false);
+ const signOut=useCallback(async(reason:'idle'|'manual')=>{
+  if(!client||signingOut.current)return;
+  signingOut.current=true;
+  // Remove the activity marker before ending the session, so refresh cannot revive it.
+  localStorage.removeItem(ACTIVITY_STORAGE_KEY);
+  try{await client.auth.signOut();setToken('');setRows([]);setMessage(reason==='idle'?'Signed out after 15 minutes of inactivity.':'Signed out.');}
+  catch{setMessage('Unable to complete sign out. Close this tab and contact the administrator.');}
+  finally{signingOut.current=false;}
+ },[client]);
+ useEffect(()=>{
+  if(!client||!token)return;
+  let lastRecorded=0;
+  const readLastActivity=()=>{
+   const raw=localStorage.getItem(ACTIVITY_STORAGE_KEY);
+   const parsed=raw?Number(raw):NaN;
+   if(Number.isFinite(parsed)&&parsed>0&&parsed<=Date.now())return parsed;
+   // Existing users upgrading to this release get one fresh 15-minute interval.
+   const now=Date.now();localStorage.setItem(ACTIVITY_STORAGE_KEY,String(now));return now;
+  };
+  let lastActivity=readLastActivity();
+  const check=()=>{
+   lastActivity=readLastActivity();
+   const remaining=IDLE_TIMEOUT_MS-(Date.now()-lastActivity);
+   setIdleSecondsLeft(Math.max(0,Math.ceil(remaining/1000)));
+   if(remaining<=0)void signOut('idle');
+  };
+  const activity=()=>{
+   const now=Date.now();
+   // Check expiry BEFORE recording activity; activity cannot revive an expired session.
+   if(now-lastActivity>=IDLE_TIMEOUT_MS){void signOut('idle');return;}
+   if(now-lastRecorded<1000)return;
+   lastRecorded=now;lastActivity=now;
+   localStorage.setItem(ACTIVITY_STORAGE_KEY,String(now));
+   setIdleSecondsLeft(Math.ceil(IDLE_TIMEOUT_MS/1000));
+  };
+  const syncFromTab=(event:StorageEvent)=>{
+   if(event.key!==ACTIVITY_STORAGE_KEY)return;
+   if(event.newValue===null){void signOut('manual');return;}
+   check();
+  };
+  const onVisibility=()=>{if(document.visibilityState==='visible')check();};
+  check();
+  const interval=window.setInterval(check,5000);
+  const events=['pointerdown','pointermove','keydown','touchstart','scroll'] as const;
+  for(const name of events)window.addEventListener(name,activity,{passive:true});
+  window.addEventListener('storage',syncFromTab);
+  window.addEventListener('focus',check);
+  document.addEventListener('visibilitychange',onVisibility);
+  return ()=>{
+   window.clearInterval(interval);
+   for(const name of events)window.removeEventListener(name,activity);
+   window.removeEventListener('storage',syncFromTab);
+   window.removeEventListener('focus',check);
+   document.removeEventListener('visibilitychange',onVisibility);
+  };
+ },[client,token,signOut]);
  const api=useCallback(async(path:string,method='GET',body?:object)=>{if(!client)throw Error('Not configured');const {data:{session}}=await client.auth.getSession();if(!session)throw Error('Sign in again');const response=await fetch(path,{method,headers:{Authorization:`Bearer ${session.access_token}`,...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined,cache:'no-store'});const json=await response.json();if(!response.ok)throw Error(json.error||'Request failed');return json},[client]);
  const load=useCallback(async()=>{setLoading(true);try{const [a,s]=await Promise.all([api('/api/admin/appointments'),api('/api/admin/settings')]);setRows(a.appointments||[]);const h=s.settings?.find((v:{key:string})=>v.key==='hours');if(h?.value){setHours(h.value.text||'Call to confirm consultation timings');setPublished(h.value.published===true)}setMessage('Latest enquiries and settings loaded.')}catch(e){setMessage(e instanceof Error?e.message:'Could not load admin data')}finally{setLoading(false)}},[api]);
  useEffect(()=>{if(token)void load()},[token,load]);
- async function login(e:React.FormEvent){e.preventDefault();if(!client)return;setLoading(true);const {error}=await client.auth.signInWithPassword({email,password});setLoading(false);setPassword('');setMessage(error?.message||'Signed in.');}
+ async function login(e:React.FormEvent){e.preventDefault();if(!client)return;setLoading(true);const {error}=await client.auth.signInWithPassword({email,password});if(!error)localStorage.setItem(ACTIVITY_STORAGE_KEY,String(Date.now()));setLoading(false);setPassword('');setMessage(error?.message||'Signed in.');}
  async function saveHours(){setLoading(true);try{await api('/api/admin/settings','PUT',{key:'hours',value:{text:hours.trim(),published}});setMessage(published?'Verified hours published to the public website.':'Hours saved as draft and hidden from visitors.')}catch(e){setMessage(e instanceof Error?e.message:'Save failed')}finally{setLoading(false)}}
  async function updateStatus(id:string,status:Appt['status']){setLoading(true);try{await api('/api/admin/appointments','PATCH',{id,status});setRows(old=>old.map(r=>r.id===id?{...r,status}:r));setMessage('Enquiry status updated. This does not notify the patient.')}catch(e){setMessage(e instanceof Error?e.message:'Update failed')}finally{setLoading(false)}}
- return <section className="section wrap"><h1 className="heading">Clinic Admin Dashboard</h1><p className="mt-3 text-sm leading-7">Manage recent appointment enquiries and verified clinic consultation timings. Restricted to authorised staff.</p>{!configured?<p role="alert" className="mt-6 rounded-xl bg-sky p-5">Add your Supabase configuration to enable admin sign-in.</p>:!token?<form className="mt-8 max-w-md space-y-4 rounded-2xl border p-7" onSubmit={login}><h2 className="text-xl font-bold">Admin sign in</h2><label className="block">Email<input className="field mt-2" type="email" autoComplete="username" required value={email} onChange={e=>setEmail(e.target.value)}/></label><label className="block">Password<input className="field mt-2" type="password" autoComplete="current-password" required value={password} onChange={e=>setPassword(e.target.value)}/></label><button disabled={loading} className="btn-primary">Sign in</button></form>:<div className="mt-8 space-y-8"><div className="flex flex-wrap gap-3"><button disabled={loading} onClick={()=>void load()} className="btn-outline">Refresh enquiries</button><button className="btn-outline" onClick={async()=>{await client?.auth.signOut();setRows([]);setMessage('Signed out.')}}>Sign out</button></div><div className="max-w-2xl rounded-2xl border p-6"><h2 className="text-xl font-bold">Consultation timings</h2><p className="mt-2 text-sm">Only publish clinic-approved timings. Unpublished text is not shown on the public site.</p><label className="mt-4 block text-sm font-bold">Hours text<textarea className="field mt-2" maxLength={500} rows={3} value={hours} onChange={e=>setHours(e.target.value)}/></label><label className="mt-3 flex items-center gap-3 text-sm"><input type="checkbox" checked={published} onChange={e=>setPublished(e.target.checked)}/> Verified by clinic — publish publicly</label><button disabled={loading||!hours.trim()} className="btn-primary mt-5" onClick={()=>void saveHours()}>Save timings</button></div><div><h2 className="mb-4 text-xl font-bold">Recent appointment enquiries (latest 100)</h2><div className="overflow-x-auto"><table className="w-full min-w-[860px] border-collapse text-left text-sm"><thead className="bg-sky"><tr>{['Patient','Contact','Preferred date','Time','Category','Message','Status'].map(h=><th scope="col" key={h} className="p-3">{h}</th>)}</tr></thead><tbody>{rows.map(r=><tr key={r.id} className="border-b"><td className="p-3">{r.full_name}</td><td className="p-3"><a href={`tel:${r.phone}`} className="underline">{r.phone}</a></td><td className="p-3">{r.preferred_date}</td><td className="p-3">{r.preferred_time}</td><td className="p-3">{r.category}</td><td className="p-3 max-w-48 break-words">{r.message}</td><td className="p-3"><select aria-label={`Status for ${r.full_name}`} disabled={loading} className="field" value={r.status} onChange={e=>void updateStatus(r.id,e.target.value as Appt['status'])}><option value="new">New</option><option value="contacted">Contacted</option><option value="closed">Closed</option></select></td></tr>)}</tbody></table>{rows.length===0&&<p className="p-5 text-sm">No recent enquiries found.</p>}</div><p className="mt-3 text-xs">Marking an enquiry as contacted or closed does not confirm a medical appointment or send a notification.</p></div></div>}{message&&<p role="status" className="mt-5 rounded-xl bg-sky p-4 text-sm">{message}</p>}</section>
+ return <section className="section wrap"><h1 className="heading">Clinic Admin Dashboard</h1><p className="mt-3 text-sm leading-7">Manage recent appointment enquiries and verified clinic consultation timings. Restricted to authorised staff.</p>{!configured?<p role="alert" className="mt-6 rounded-xl bg-sky p-5">Add your Supabase configuration to enable admin sign-in.</p>:!token?<form className="mt-8 max-w-md space-y-4 rounded-2xl border p-7" onSubmit={login}><h2 className="text-xl font-bold">Admin sign in</h2><label className="block">Email<input className="field mt-2" type="email" autoComplete="username" required value={email} onChange={e=>setEmail(e.target.value)}/></label><label className="block">Password<input className="field mt-2" type="password" autoComplete="current-password" required value={password} onChange={e=>setPassword(e.target.value)}/></label><button disabled={loading} className="btn-primary">Sign in</button></form>:<div className="mt-8 space-y-8"><div className="flex flex-wrap gap-3"><button disabled={loading} onClick={()=>void load()} className="btn-outline">Refresh enquiries</button><button className="btn-outline" onClick={()=>void signOut('manual')}>Sign out</button></div><p role="status" className="text-sm text-slate-600">For privacy, this admin session signs out after 15 minutes without activity.{idleSecondsLeft<=60?` Automatic sign out in ${idleSecondsLeft} seconds.`:''}</p><div className="max-w-2xl rounded-2xl border p-6"><h2 className="text-xl font-bold">Consultation timings</h2><p className="mt-2 text-sm">Only publish clinic-approved timings. Unpublished text is not shown on the public site.</p><label className="mt-4 block text-sm font-bold">Hours text<textarea className="field mt-2" maxLength={500} rows={3} value={hours} onChange={e=>setHours(e.target.value)}/></label><label className="mt-3 flex items-center gap-3 text-sm"><input type="checkbox" checked={published} onChange={e=>setPublished(e.target.checked)}/> Verified by clinic — publish publicly</label><button disabled={loading||!hours.trim()} className="btn-primary mt-5" onClick={()=>void saveHours()}>Save timings</button></div><div><h2 className="mb-4 text-xl font-bold">Recent appointment enquiries (latest 100)</h2><div className="overflow-x-auto"><table className="w-full min-w-[860px] border-collapse text-left text-sm"><thead className="bg-sky"><tr>{['Patient','Contact','Preferred date','Time','Category','Message','Status'].map(h=><th scope="col" key={h} className="p-3">{h}</th>)}</tr></thead><tbody>{rows.map(r=><tr key={r.id} className="border-b"><td className="p-3">{r.full_name}</td><td className="p-3"><a href={`tel:${r.phone}`} className="underline">{r.phone}</a></td><td className="p-3">{r.preferred_date}</td><td className="p-3">{r.preferred_time}</td><td className="p-3">{r.category}</td><td className="p-3 max-w-48 break-words">{r.message}</td><td className="p-3"><select aria-label={`Status for ${r.full_name}`} disabled={loading} className="field" value={r.status} onChange={e=>void updateStatus(r.id,e.target.value as Appt['status'])}><option value="new">New</option><option value="contacted">Contacted</option><option value="closed">Closed</option></select></td></tr>)}</tbody></table>{rows.length===0&&<p className="p-5 text-sm">No recent enquiries found.</p>}</div><p className="mt-3 text-xs">Marking an enquiry as contacted or closed does not confirm a medical appointment or send a notification.</p></div></div>}{message&&<p role="status" className="mt-5 rounded-xl bg-sky p-4 text-sm">{message}</p>}</section>
 }
