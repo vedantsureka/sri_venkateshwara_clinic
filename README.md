@@ -43,3 +43,12 @@ Open http://localhost:3000. Build with `npm run build` and run `npm start`.
 ## Technical stack
 
 Next.js App Router, React, TypeScript, Tailwind, Lucide, Supabase (optional but needed to accept enquiries), Zod validation. No fictional medical credentials, confirmed appointment promises, or invented consultation schedule.
+
+
+## Admin dashboard update (this archive)
+
+Visit `/admin`. Set up Supabase Auth users, run `supabase.sql`, then grant approved users access via `admin_users` as documented above. Admins can load the latest 100 enquiries, change their workflow status (new/contacted/closed), and save clinic-verified public consultation hours. Changes to hours are automatically read by the website through `/api/public/hours`; unverified drafts are not published. This does **not** create bookings or send patient notifications.
+
+**Security / anti-spam:** The earlier Turnstile placeholder did not render a challenge but could require a verification token; that misleading non-functional integration has been removed. A hidden honeypot remains as a basic deterrent. Before going live, add real server-verified CAPTCHA and IP rate limiting/WAF protections. Do not assume the current form is production-safe without those protections and a security/privacy review.
+
+**Source caveat:** This build is based on the prior supplied website ZIP, not a verified checkout of the linked GitHub repository (the repository was unavailable to this environment). Merge with any newer repository changes manually.

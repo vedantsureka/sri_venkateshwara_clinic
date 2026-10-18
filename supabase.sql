@@ -17,8 +17,10 @@ alter table public.clinic_settings enable row level security;
 create or replace function public.is_clinic_admin() returns boolean language sql stable security definer set search_path = public as $$ select exists(select 1 from public.admin_users where user_id=auth.uid()); $$;
 revoke all on function public.is_clinic_admin() from public;
 grant execute on function public.is_clinic_admin() to authenticated;
+drop policy if exists "approved admins read enquiries" on public.appointments;
 create policy "approved admins read enquiries" on public.appointments
   for select to authenticated using (public.is_clinic_admin());
+drop policy if exists "approved admins modify enquiries" on public.appointments;
 create policy "approved admins modify enquiries" on public.appointments
   for update to authenticated using (public.is_clinic_admin());
 -- admin_users has no direct user-level access: verified on server using service role
