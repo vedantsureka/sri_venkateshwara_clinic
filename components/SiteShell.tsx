@@ -1,5 +1,5 @@
-import ClinicHours from '@/components/ClinicHours';
 'use client';
+import ClinicHours from '@/components/ClinicHours';
 import Link from 'next/link';
 import { useState } from 'react';
 import { Menu, X, Phone, MapPin, CalendarDays, HeartPulse, ArrowUpRight } from 'lucide-react';
