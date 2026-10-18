@@ -1,0 +1,7 @@
+import type { Metadata } from 'next';
+import './globals.css';
+import { Header,Footer,MobileActions } from '@/components/SiteShell';
+import { clinic } from '@/lib/data';
+const url=process.env.NEXT_PUBLIC_SITE_URL || 'https://example.com';
+export const metadata:Metadata={metadataBase:new URL(url),title:{default:'Sri Venkateshwara Clinic | Physician in Kompally, Hyderabad',template:'%s | Sri Venkateshwara Clinic'},description:'Contact Sri Venkateshwara Clinic, a physician clinic in Kompally, Hyderabad. Request consultations, call the clinic, or get directions.',openGraph:{title:'Sri Venkateshwara Clinic | Physician',description:'Physician consultation enquiries in Kompally, Hyderabad.',type:'website',locale:'en_IN'},robots:{index:true,follow:true}};
+export default function RootLayout({children}:{children:React.ReactNode}){const structured={ '@context':'https://schema.org','@type':'MedicalClinic',name:clinic.name,telephone:clinic.tel,address:{'@type':'PostalAddress',streetAddress:'132/B, Behind Reliance Smart Bazar, Ruby Block',addressLocality:'Kompally, Hyderabad',addressRegion:'Telangana',postalCode:'500100',addressCountry:'IN'},url,aggregateRating:{'@type':'AggregateRating',ratingValue:'4.9',reviewCount:82},description:'Physician and general medical clinic in Kompally, Hyderabad. Call to confirm services and consultation timings.'};return <html lang="en"><body><script type="application/ld+json" dangerouslySetInnerHTML={{__html:JSON.stringify(structured).replace(/</g,'\\u003c')}}/><Header/><main>{children}</main><Footer/><MobileActions/></body></html>}
